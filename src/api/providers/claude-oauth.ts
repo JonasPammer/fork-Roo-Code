@@ -8,6 +8,8 @@ import { AnthropicHandler } from "./anthropic"
 
 const CLAUDE_OAUTH_DIR = ".claude"
 const CLAUDE_OAUTH_CREDENTIAL_FILENAME = "oauth_creds.json"
+const CLAUDE_OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+const CLAUDE_OAUTH_TOKEN_ENDPOINT = "https://console.anthropic.com/v1/oauth/token"
 
 interface ClaudeOAuthCredentials {
 	access_token: string
@@ -66,23 +68,17 @@ export class ClaudeOAuthHandler extends AnthropicHandler {
 			throw new Error("No refresh token available in credentials.")
 		}
 
-		// Note: The actual OAuth token refresh endpoint for Claude Pro/Max
-		// will need to be determined from Anthropic's OAuth documentation.
-		// This is a placeholder implementation that follows the standard OAuth2 pattern.
-		const CLAUDE_OAUTH_TOKEN_ENDPOINT = "https://console.anthropic.com/oauth/token"
-
-		const bodyData = new URLSearchParams({
-			grant_type: "refresh_token",
-			refresh_token: credentials.refresh_token,
-		})
-
 		const response = await fetch(CLAUDE_OAUTH_TOKEN_ENDPOINT, {
 			method: "POST",
 			headers: {
-				"Content-Type": "application/x-www-form-urlencoded",
+				"Content-Type": "application/json",
 				Accept: "application/json",
 			},
-			body: bodyData.toString(),
+			body: JSON.stringify({
+				grant_type: "refresh_token",
+				refresh_token: credentials.refresh_token,
+				client_id: CLAUDE_OAUTH_CLIENT_ID,
+			}),
 		})
 
 		if (!response.ok) {
@@ -90,7 +86,14 @@ export class ClaudeOAuthHandler extends AnthropicHandler {
 			throw new Error(`Token refresh failed: ${response.status} ${response.statusText}. Response: ${errorText}`)
 		}
 
-		const tokenData = await response.json()
+		const tokenData = (await response.json()) as {
+			access_token: string
+			refresh_token?: string
+			expires_in: number
+			token_type?: string
+			error?: string
+			error_description?: string
+		}
 
 		if (tokenData.error) {
 			throw new Error(`Token refresh failed: ${tokenData.error} - ${tokenData.error_description}`)
