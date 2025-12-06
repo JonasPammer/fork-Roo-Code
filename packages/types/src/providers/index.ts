@@ -129,6 +129,8 @@ export function getProviderDefaultModelId(
 			return vscodeLlmDefaultModelId
 		case "claude-code":
 			return claudeCodeDefaultModelId
+		case "claude-oauth":
+			return anthropicDefaultModelId
 		case "cerebras":
 			return cerebrasDefaultModelId
 		case "sambanova":

@@ -124,6 +124,7 @@ export const providerNames = [
 	"baseten",
 	"cerebras",
 	"claude-code",
+	"claude-oauth",
 	"doubao",
 	"deepseek",
 	"featherless",
@@ -204,6 +205,10 @@ const anthropicSchema = apiModelIdProviderModelSchema.extend({
 const claudeCodeSchema = apiModelIdProviderModelSchema.extend({
 	claudeCodePath: z.string().optional(),
 	claudeCodeMaxOutputTokens: z.number().int().min(1).max(200000).optional(),
+})
+
+const claudeOAuthSchema = apiModelIdProviderModelSchema.extend({
+	claudeOAuthPath: z.string().optional(),
 })
 
 const glamaSchema = baseProviderSettingsSchema.extend({
@@ -437,6 +442,7 @@ const defaultSchema = z.object({
 export const providerSettingsSchemaDiscriminated = z.discriminatedUnion("apiProvider", [
 	anthropicSchema.merge(z.object({ apiProvider: z.literal("anthropic") })),
 	claudeCodeSchema.merge(z.object({ apiProvider: z.literal("claude-code") })),
+	claudeOAuthSchema.merge(z.object({ apiProvider: z.literal("claude-oauth") })),
 	glamaSchema.merge(z.object({ apiProvider: z.literal("glama") })),
 	openRouterSchema.merge(z.object({ apiProvider: z.literal("openrouter") })),
 	bedrockSchema.merge(z.object({ apiProvider: z.literal("bedrock") })),
@@ -480,6 +486,7 @@ export const providerSettingsSchema = z.object({
 	apiProvider: providerNamesSchema.optional(),
 	...anthropicSchema.shape,
 	...claudeCodeSchema.shape,
+	...claudeOAuthSchema.shape,
 	...glamaSchema.shape,
 	...openRouterSchema.shape,
 	...bedrockSchema.shape,
@@ -571,6 +578,7 @@ export const isTypicalProvider = (key: unknown): key is TypicalProvider =>
 export const modelIdKeysByProvider: Record<TypicalProvider, ModelIdKey> = {
 	anthropic: "apiModelId",
 	"claude-code": "apiModelId",
+	"claude-oauth": "apiModelId",
 	glama: "glamaModelId",
 	openrouter: "openRouterModelId",
 	bedrock: "apiModelId",
@@ -610,7 +618,13 @@ export const modelIdKeysByProvider: Record<TypicalProvider, ModelIdKey> = {
  */
 
 // Providers that use Anthropic-style API protocol.
-export const ANTHROPIC_STYLE_PROVIDERS: ProviderName[] = ["anthropic", "claude-code", "bedrock", "minimax"]
+export const ANTHROPIC_STYLE_PROVIDERS: ProviderName[] = [
+	"anthropic",
+	"claude-code",
+	"claude-oauth",
+	"bedrock",
+	"minimax",
+]
 
 export const getApiProtocol = (provider: ProviderName | undefined, modelId?: string): "anthropic" | "openai" => {
 	if (provider && ANTHROPIC_STYLE_PROVIDERS.includes(provider)) {
@@ -658,6 +672,7 @@ export const MODELS_BY_PROVIDER: Record<
 		models: Object.keys(cerebrasModels),
 	},
 	"claude-code": { id: "claude-code", label: "Claude Code", models: Object.keys(claudeCodeModels) },
+	"claude-oauth": { id: "claude-oauth", label: "Claude OAuth (Pro/Max)", models: Object.keys(anthropicModels) },
 	deepseek: {
 		id: "deepseek",
 		label: "DeepSeek",
