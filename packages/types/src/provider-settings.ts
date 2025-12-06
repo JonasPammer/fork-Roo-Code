@@ -209,6 +209,7 @@ const claudeCodeSchema = apiModelIdProviderModelSchema.extend({
 
 const claudeOAuthSchema = apiModelIdProviderModelSchema.extend({
 	claudeOAuthPath: z.string().optional(),
+	claudeOAuthCode: z.string().optional(), // Authorization code from OAuth flow (user pastes this after browser auth)
 })
 
 const glamaSchema = baseProviderSettingsSchema.extend({
