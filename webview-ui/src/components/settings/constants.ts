@@ -25,6 +25,7 @@ import {
 
 export const MODELS_BY_PROVIDER: Partial<Record<ProviderName, Record<string, ModelInfo>>> = {
 	anthropic: anthropicModels,
+	"claude-oauth": anthropicModels,
 	"claude-code": claudeCodeModels,
 	bedrock: bedrockModels,
 	cerebras: cerebrasModels,
@@ -83,4 +84,5 @@ export const PROVIDERS = [
 	{ value: "vercel-ai-gateway", label: "Vercel AI Gateway" },
 	{ value: "minimax", label: "MiniMax" },
 	{ value: "baseten", label: "Baseten" },
+	{ value: "claude-oauth", label: "Claude OAuth (Pro/Max)" },
 ].sort((a, b) => a.label.localeCompare(b.label))

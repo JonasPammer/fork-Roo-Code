@@ -73,6 +73,7 @@ import {
 	Cerebras,
 	Chutes,
 	ClaudeCode,
+	ClaudeOAuth,
 	DeepSeek,
 	Doubao,
 	Gemini,
@@ -346,6 +347,7 @@ const ApiOptions = ({
 				requesty: { field: "requestyModelId", default: requestyDefaultModelId },
 				litellm: { field: "litellmModelId", default: litellmDefaultModelId },
 				anthropic: { field: "apiModelId", default: anthropicDefaultModelId },
+				"claude-oauth": { field: "apiModelId", default: anthropicDefaultModelId },
 				cerebras: { field: "apiModelId", default: cerebrasDefaultModelId },
 				"claude-code": { field: "apiModelId", default: claudeCodeDefaultModelId },
 				"qwen-code": { field: "apiModelId", default: qwenCodeDefaultModelId },
@@ -571,6 +573,14 @@ const ApiOptions = ({
 
 			{selectedProvider === "anthropic" && (
 				<Anthropic
+					apiConfiguration={apiConfiguration}
+					setApiConfigurationField={setApiConfigurationField}
+					simplifySettings={fromWelcomeView}
+				/>
+			)}
+
+			{selectedProvider === "claude-oauth" && (
+				<ClaudeOAuth
 					apiConfiguration={apiConfiguration}
 					setApiConfigurationField={setApiConfigurationField}
 					simplifySettings={fromWelcomeView}

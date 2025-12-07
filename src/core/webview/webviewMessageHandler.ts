@@ -1082,6 +1082,15 @@ export const webviewMessageHandler = async (
 				vscode.env.openExternal(vscode.Uri.parse(message.url))
 			}
 			break
+		case "startClaudeOAuth":
+			try {
+				const { startClaudeOAuthFlow } = await import("../../api/providers/claude-oauth")
+				const authUrl = await startClaudeOAuthFlow()
+				vscode.env.openExternal(vscode.Uri.parse(authUrl))
+			} catch (error) {
+				vscode.window.showErrorMessage(`Failed to start Claude OAuth flow: ${error}`)
+			}
+			break
 		case "checkpointDiff":
 			const result = checkoutDiffPayloadSchema.safeParse(message.payload)
 

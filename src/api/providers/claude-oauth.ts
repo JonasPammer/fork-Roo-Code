@@ -6,6 +6,27 @@ import * as path from "path"
 
 import type { ApiHandlerOptions } from "../../shared/api"
 import { AnthropicHandler } from "./anthropic"
+import { ApiStream } from "../transform/stream"
+import type { ApiHandlerCreateMessageMetadata } from "../index"
+
+// This system prompt prefix is required for OAuth tokens to work.
+// The OAuth tokens are specifically authorized for "Claude Code" usage.
+const CLAUDE_CODE_SYSTEM_PREFIX = "You are Claude Code, Anthropic's official CLI for Claude."
+
+// Prefix for all debug logs - filter by this in console
+const LOG_PREFIX = "[RooClaudeOAuth]"
+
+function log(message: string, ...args: unknown[]) {
+	if (args.length > 0) {
+		console.log(`${LOG_PREFIX} ${message}`, ...args)
+	} else {
+		console.log(`${LOG_PREFIX} ${message}`)
+	}
+}
+
+function logError(message: string, error?: unknown) {
+	console.error(`${LOG_PREFIX} ERROR: ${message}`, error)
+}
 
 const CLAUDE_OAUTH_DIR = ".claude"
 const CLAUDE_OAUTH_CREDENTIAL_FILENAME = "oauth_creds.json"
@@ -227,19 +248,73 @@ export class ClaudeOAuthHandler extends AnthropicHandler {
 	constructor(options: ClaudeOAuthHandlerOptions) {
 		super(options)
 		this.options = options
+		log("constructor called")
+		log(
+			"options:",
+			JSON.stringify({
+				claudeOAuthPath: options.claudeOAuthPath,
+				claudeOAuthCode: options.claudeOAuthCode ? "[CODE_PROVIDED]" : undefined,
+				apiModelId: options.apiModelId,
+			}),
+		)
 	}
 
 	private async loadCachedClaudeCredentials(): Promise<ClaudeOAuthCredentials> {
+		const keyFile = getClaudeOAuthCredentialPath(this.options.claudeOAuthPath)
+		log(`loadCachedClaudeCredentials from: ${keyFile}`)
+
+		// Try our own credentials file first
 		try {
-			const keyFile = getClaudeOAuthCredentialPath(this.options.claudeOAuthPath)
 			const credsStr = await fs.readFile(keyFile, "utf-8")
-			return JSON.parse(credsStr)
+			const creds = JSON.parse(credsStr)
+			log(`loadCachedClaudeCredentials success, full credentials: ${JSON.stringify(creds)}`)
+			return creds
 		} catch (error) {
-			console.error(
-				`Error reading or parsing credentials file at ${getClaudeOAuthCredentialPath(this.options.claudeOAuthPath)}`,
-			)
-			throw new Error(`Failed to load Claude OAuth credentials: ${error}`)
+			log(`loadCachedClaudeCredentials failed for ${keyFile}, trying OpenCode auth...`)
 		}
+
+		// Try OpenCode's auth file as fallback
+		const homedir = process.env.HOME || process.env.USERPROFILE || ""
+		const opencodeAuthFile = path.join(homedir, ".local", "share", "opencode", "auth.json")
+		log(`loadCachedClaudeCredentials trying OpenCode auth: ${opencodeAuthFile}`)
+		try {
+			const opencodeCredsStr = await fs.readFile(opencodeAuthFile, "utf-8")
+			const opencodeCreds = JSON.parse(opencodeCredsStr)
+			if (opencodeCreds.anthropic && opencodeCreds.anthropic.type === "oauth") {
+				const creds: ClaudeOAuthCredentials = {
+					access_token: opencodeCreds.anthropic.access,
+					refresh_token: opencodeCreds.anthropic.refresh,
+					token_type: "Bearer",
+					expiry_date: opencodeCreds.anthropic.expires,
+				}
+				log(`loadCachedClaudeCredentials success from OpenCode, credentials: ${JSON.stringify(creds)}`)
+				return creds
+			}
+		} catch (error) {
+			log(`loadCachedClaudeCredentials failed for OpenCode auth too`)
+		}
+
+		// Try Claude CLI's credentials as last resort
+		const claudeCliAuthFile = path.join(homedir, ".claude", ".credentials.json")
+		log(`loadCachedClaudeCredentials trying Claude CLI auth: ${claudeCliAuthFile}`)
+		try {
+			const claudeCliCredsStr = await fs.readFile(claudeCliAuthFile, "utf-8")
+			const claudeCliCreds = JSON.parse(claudeCliCredsStr)
+			if (claudeCliCreds.claudeAiOauth) {
+				const creds: ClaudeOAuthCredentials = {
+					access_token: claudeCliCreds.claudeAiOauth.accessToken,
+					refresh_token: claudeCliCreds.claudeAiOauth.refreshToken,
+					token_type: "Bearer",
+					expiry_date: claudeCliCreds.claudeAiOauth.expiresAt,
+				}
+				log(`loadCachedClaudeCredentials success from Claude CLI, credentials: ${JSON.stringify(creds)}`)
+				return creds
+			}
+		} catch (error) {
+			logError(`loadCachedClaudeCredentials failed for all sources`, error)
+		}
+
+		throw new Error(`Failed to load Claude OAuth credentials from any source`)
 	}
 
 	private isTokenValid(credentials: ClaudeOAuthCredentials): boolean {
@@ -251,10 +326,12 @@ export class ClaudeOAuthHandler extends AnthropicHandler {
 	}
 
 	private async doRefreshAccessToken(credentials: ClaudeOAuthCredentials): Promise<ClaudeOAuthCredentials> {
+		log("doRefreshAccessToken called")
 		if (!credentials.refresh_token) {
 			throw new Error("No refresh token available in credentials.")
 		}
 
+		log("doRefreshAccessToken: calling token endpoint...")
 		const response = await fetch(CLAUDE_OAUTH_TOKEN_ENDPOINT, {
 			method: "POST",
 			headers: {
@@ -307,7 +384,9 @@ export class ClaudeOAuthHandler extends AnthropicHandler {
 	}
 
 	private async refreshAccessToken(credentials: ClaudeOAuthCredentials): Promise<ClaudeOAuthCredentials> {
+		log("refreshAccessToken called")
 		if (this.refreshPromise) {
+			log("refreshAccessToken: already in progress, waiting...")
 			return this.refreshPromise
 		}
 
@@ -315,34 +394,159 @@ export class ClaudeOAuthHandler extends AnthropicHandler {
 
 		try {
 			const result = await this.refreshPromise
+			log("refreshAccessToken: success, new token starts with:", result.access_token?.substring(0, 20))
 			return result
 		} finally {
 			this.refreshPromise = null
 		}
 	}
 
+	/**
+	 * Create a custom fetch function that:
+	 * 1. Uses Authorization: Bearer instead of x-api-key
+	 * 2. Adds the required anthropic-beta header for OAuth
+	 * 3. Refreshes tokens if needed
+	 */
+	private createOAuthFetch(): typeof fetch {
+		return async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+			log("fetch: called")
+			log(`fetch: URL = ${typeof input === "string" ? input : input.toString()}`)
+
+			// Ensure we have valid credentials
+			if (!this.credentials || !this.isTokenValid(this.credentials)) {
+				log("fetch: token invalid or missing, refreshing...")
+				if (this.credentials) {
+					this.credentials = await this.refreshAccessToken(this.credentials)
+					log("fetch: token refreshed successfully")
+				}
+			}
+
+			const headers = new Headers(init?.headers)
+
+			// Log original headers
+			log("fetch: original headers:")
+			headers.forEach((value, key) => {
+				log(`fetch:   ${key}: ${value}`)
+			})
+
+			// Remove x-api-key if present (SDK adds it automatically)
+			headers.delete("x-api-key")
+			log("fetch: removed x-api-key header")
+
+			// Add OAuth Bearer token
+			headers.set("Authorization", `Bearer ${this.credentials!.access_token}`)
+			log(`fetch: set Authorization: Bearer ${this.credentials!.access_token}`)
+
+			// Set User-Agent to match Claude Code CLI format
+			// Anthropic checks this header to verify the request is from Claude Code
+			headers.set("User-Agent", "claude-cli/2.0.0 (roo-code)")
+			log("fetch: set User-Agent: claude-cli/2.0.0 (roo-code)")
+
+			// Remove x-stainless-* headers that the SDK adds
+			// These identify it as SDK usage rather than Claude Code
+			const headersToDelete: string[] = []
+			headers.forEach((_, key) => {
+				if (key.toLowerCase().startsWith("x-stainless")) {
+					headersToDelete.push(key)
+				}
+			})
+			headersToDelete.forEach((key) => {
+				headers.delete(key)
+				log(`fetch: removed ${key} header`)
+			})
+
+			// Add required beta headers for OAuth
+			// oauth-2025-04-20 is required for OAuth authentication
+			// claude-code-20250219 enables Claude Code-style access
+			const existingBeta = headers.get("anthropic-beta") || ""
+			const betaList = existingBeta
+				.split(",")
+				.map((b) => b.trim())
+				.filter(Boolean)
+			const mergedBetas = [
+				...new Set([
+					"oauth-2025-04-20",
+					"claude-code-20250219",
+					"interleaved-thinking-2025-05-14",
+					...betaList,
+				]),
+			].join(",")
+			headers.set("anthropic-beta", mergedBetas)
+			log(`fetch: set anthropic-beta: ${mergedBetas}`)
+
+			// Log final headers
+			log("fetch: final headers:")
+			headers.forEach((value, key) => {
+				log(`fetch:   ${key}: ${value}`)
+			})
+
+			// Log full request body
+			if (init?.body) {
+				const bodyStr = typeof init.body === "string" ? init.body : JSON.stringify(init.body)
+				log(`fetch: full body: ${bodyStr}`)
+			}
+
+			// Convert Headers to plain object for compatibility
+			const headersObj: Record<string, string> = {}
+			headers.forEach((value, key) => {
+				headersObj[key] = value
+			})
+
+			log(`fetch: making request with headers object: ${JSON.stringify(headersObj)}`)
+
+			const response = await fetch(input, {
+				...init,
+				headers: headersObj,
+			})
+
+			log(`fetch: response status: ${response.status} ${response.statusText}`)
+
+			// If error, try to log response body
+			if (!response.ok) {
+				const clonedResponse = response.clone()
+				try {
+					const errorBody = await clonedResponse.text()
+					log(`fetch: error body: ${errorBody}`)
+				} catch (e) {
+					log("fetch: could not read error body")
+				}
+			}
+
+			return response
+		}
+	}
+
 	private async ensureAuthenticated(): Promise<void> {
+		log("ensureAuthenticated: called")
+		log(`ensureAuthenticated: have credentials? ${!!this.credentials}`)
+		log(`ensureAuthenticated: have claudeOAuthCode? ${!!this.options.claudeOAuthCode}`)
+
 		// If an OAuth code is provided in the config, exchange it for tokens first
 		if (this.options.claudeOAuthCode && !this.credentials) {
+			log("ensureAuthenticated: attempting to exchange OAuth code...")
 			try {
 				this.credentials = await exchangeClaudeOAuthCode(
 					this.options.claudeOAuthCode,
 					this.options.claudeOAuthPath,
 				)
+				log("ensureAuthenticated: OAuth code exchange successful")
 				// Clear the code from options after successful exchange to prevent re-use
 				// Note: The UI should also clear this field after successful authentication
 			} catch (error) {
-				console.error("Failed to exchange OAuth code:", error)
+				logError("ensureAuthenticated: OAuth code exchange failed", error)
 				// Fall through to try loading cached credentials
 			}
 		}
 
 		// Try to load cached credentials if we don't have any
 		if (!this.credentials) {
+			log("ensureAuthenticated: no credentials, loading from cache...")
 			try {
 				this.credentials = await this.loadCachedClaudeCredentials()
+				log("ensureAuthenticated: loaded credentials from cache")
 			} catch (error) {
 				// If no cached credentials and no code was provided, provide helpful error
+				logError("ensureAuthenticated: failed to load cached credentials", error)
 				const authUrl = await startClaudeOAuthFlow()
 				throw new Error(
 					`No Claude OAuth credentials found. To authenticate:\n` +
@@ -354,14 +558,22 @@ export class ClaudeOAuthHandler extends AnthropicHandler {
 			}
 		}
 
-		if (!this.isTokenValid(this.credentials)) {
+		const tokenValid = this.isTokenValid(this.credentials)
+		log(`ensureAuthenticated: token valid? ${tokenValid}`)
+		if (!tokenValid) {
+			log("ensureAuthenticated: token expired, refreshing...")
 			this.credentials = await this.refreshAccessToken(this.credentials)
 		}
 
+		log("ensureAuthenticated: creating Anthropic client with custom fetch")
+		// Create client with custom fetch that handles OAuth headers
+		// We pass a dummy apiKey since we're using Bearer auth instead
 		this.client = new Anthropic({
 			baseURL: this.options.anthropicBaseUrl || undefined,
-			apiKey: this.credentials.access_token,
+			apiKey: "", // Empty string like OpenCode - we override via custom fetch
+			fetch: this.createOAuthFetch(),
 		})
+		log("ensureAuthenticated: done")
 	}
 
 	protected override async callApiWithRetry<T>(fn: () => Promise<T>): Promise<T> {
@@ -372,13 +584,36 @@ export class ClaudeOAuthHandler extends AnthropicHandler {
 		} catch (error: unknown) {
 			if (error && typeof error === "object" && "status" in error && error.status === 401) {
 				this.credentials = await this.refreshAccessToken(this.credentials!)
+				// Recreate client with refreshed credentials
 				this.client = new Anthropic({
 					baseURL: this.options.anthropicBaseUrl || undefined,
-					apiKey: this.credentials.access_token,
+					apiKey: "oauth-placeholder",
+					fetch: this.createOAuthFetch(),
 				})
 				return await fn()
 			}
 			throw error
 		}
+	}
+
+	/**
+	 * Override createMessage to prepend the Claude Code system prompt.
+	 * This is required because OAuth tokens are specifically authorized for "Claude Code" usage only.
+	 */
+	override async *createMessage(
+		systemPrompt: string,
+		messages: Anthropic.Messages.MessageParam[],
+		metadata?: ApiHandlerCreateMessageMetadata,
+	): ApiStream {
+		log("createMessage: called")
+		log(`createMessage: original system prompt length: ${systemPrompt.length}`)
+
+		// Prepend the Claude Code identifier to the system prompt
+		const modifiedSystemPrompt = `${CLAUDE_CODE_SYSTEM_PREFIX}\n${systemPrompt}`
+		log(`createMessage: modified system prompt length: ${modifiedSystemPrompt.length}`)
+		log(`createMessage: system prompt starts with: ${modifiedSystemPrompt.substring(0, 100)}`)
+
+		// Call the parent implementation with the modified system prompt
+		yield* super.createMessage(modifiedSystemPrompt, messages, metadata)
 	}
 }

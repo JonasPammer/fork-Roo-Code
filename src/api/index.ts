@@ -121,6 +121,7 @@ export interface ApiHandler {
 
 export function buildApiHandler(configuration: ProviderSettings): ApiHandler {
 	const { apiProvider, ...options } = configuration
+	console.log("[RooClaudeOAuth] buildApiHandler: apiProvider =", apiProvider)
 
 	switch (apiProvider) {
 		case "anthropic":
@@ -128,6 +129,7 @@ export function buildApiHandler(configuration: ProviderSettings): ApiHandler {
 		case "claude-code":
 			return new ClaudeCodeHandler(options)
 		case "claude-oauth":
+			console.log("[RooClaudeOAuth] buildApiHandler: creating ClaudeOAuthHandler")
 			return new ClaudeOAuthHandler(options)
 		case "glama":
 			return new GlamaHandler(options)
